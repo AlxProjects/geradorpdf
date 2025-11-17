@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gerador de PDF de Documentos</title>
+
+  <!-- Ajustes para mobile e PWA -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="theme-color" content="#007bff">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Tesseract.js (OCR no navegador) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- Dados de idioma português -->
+  <script src="https://cdn.jsdelivr.net/npm/@tesseract.js-data/por@1.0.0/index.min.js"></script>
+  <!-- jsPDF (gerar PDF) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/3.0.3/jspdf.umd.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 20px auto;
+      background: #fff;
+      padding: 16px;
+      border-radius: 8px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      font-size: 20px;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+    p.descricao {
+      font-size: 14px;
+      text-align: center;
+      color: #555;
+      margin-top: 0;
+      margin-bottom: 12px;
+    }
+    .form-row {
+      margin-bottom: 10px;
+    }
+    label {
+      font-size: 14px;
+      font-weight: bold;
+      display: block;
+      margin-bottom: 4px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    input[type="file"] {
+      width: 100%;
+      margin-top: 4px;
+      margin-bottom: 12px;
+    }
+    button {
+      display: inline-block;
+      padding: 10px 16px;
+      border-radius: 4px;
+      border: none;
+      background: #007bff;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #999;
+      cursor: not-allowed;
+    }
+    button:hover:enabled {
+      background: #0056b3;
+    }
+    #status {
+      margin-top: 10px;
+      font-size: 13px;
+      color: #333;
+      white-space: pre-line;
+    }
+    #resultados {
+      margin-top: 16px;
+      padding-left: 0;
+      list-style: none;
+      font-size: 14px;
+    }
+    #resultados li {
+      margin-bottom: 12px;
+      padding: 10px;
+      border-radius: 6px;
+      background: #f8f9fa;
+      border: 1px solid #ddd;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .preview-wrapper {
+      flex: 0 0 140px;
+      text-align: center;
+    }
+    .preview-image {
+      max-width: 120px;
+      max-height: 160px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      object-fit: contain;
+      background: #fff;
+    }
+    .doc-info {
+      flex: 1 1 200px;
+      min-width: 200px;
+    }
+    .doc-info-row {
+      margin-bottom: 6px;
+    }
+    .doc-info-row span.label {
+      font-weight: bold;
+    }
+    .tipo {
+      font-weight: bold;
+    }
+    a.download-link {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: #28a745;
+      color: #fff;
+      text-decoration: none;
+      font-size: 13px;
+    }
+    a.download-link:hover {
+      background: #218838;
+    }
+    .nome-arquivo-input {
+      width: 100%;
+      max-width: 280px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Gerador de PDF de Documentos</h1>
+    <p class="descricao">
+      Selecione imagens (RG, CPF, holerite, comprovantes, certidões, CNH etc.).<br>
+      O app tenta identificar o tipo e gera um PDF para cada imagem, com nome editável.
+    </p>
+
+    <div class="form-row">
+      <label for="clientName">Nome do cliente (opcional)</label>
+      <input id="clientName" type="text" placeholder="Ex.: João Silva">
+    </div>
+
+    <div class="form-row">
+      <label for="fileInput">Selecione as imagens dos documentos</label>
+      <input id="fileInput" type="file" multiple accept="image/*">
+    </div>
+
+    <button id="btnProcessar" onclick="processarImagens()">Processar imagens</button>
+
+    <div id="status"></div>
+    <ul id="resultados"></ul>
+  </div>
+
+  <script>
+    const { jsPDF } = window.jspdf;
+
+    function lerArquivoComoDataURL(arquivo) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = e => reject(e);
+        reader.readAsDataURL(arquivo);
+      });
+    }
+
+    // Detecta tipo de documento incluindo certidões e CNH
+    function identificarTipoDocumento(texto) {
+      const t = (texto || "").toLowerCase();
+
+      const ehRG =
+        t.includes("carteira de identidade") ||
+        t.includes("registro geral") ||
+        /\brg\b/.test(t);
+
+      const ehCPF =
+        t.includes("cadastro de pessoas fisicas") ||
+        t.includes("cadastro de pessoas físicas") ||
+        /\bcpf\b/.test(t);
+
+      const ehHolerite =
+        t.includes("holerite") ||
+        t.includes("contracheque") ||
+        t.includes("contra cheque") ||
+        t.includes("contra-cheque");
+
+      const ehComprovante =
+        t.includes("comprovante de residência") ||
+        t.includes("comprovante de residencia") ||
+        t.includes("conta de energia") ||
+        t.includes("conta de luz") ||
+        t.includes("conta de água") ||
+        t.includes("conta de agua") ||
+        t.includes("conta de telefone") ||
+        t.includes("conta de internet") ||
+        t.includes("endereço") ||
+        t.includes("endereco");
+
+      const ehCertidaoNascimento =
+        t.includes("certidão de nascimento") ||
+        t.includes("certidao de nascimento") ||
+        t.includes("registro de nascimento");
+
+      const ehCertidaoCasamento =
+        t.includes("certidão de casamento") ||
+        t.includes("certidao de casamento") ||
+        t.includes("registro de casamento");
+
+      const ehCNH =
+        t.includes("carteira nacional de habilitação") ||
+        t.includes("carteira nacional de habilitacao") ||
+        /\bcnh\b/.test(t);
+
+      if (ehRG) return "RG";
+      if (ehCPF) return "CPF";
+      if (ehHolerite) return "HOLERITE";
+      if (ehComprovante) return "COMPROVANTE_RESIDENCIA";
+      if (ehCertidaoNascimento) return "CERTIDAO_NASCIMENTO";
+      if (ehCertidaoCasamento) return "CERTIDAO_CASAMENTO";
+      if (ehCNH) return "CNH";
+      return "DESCONHECIDO";
+    }
+
+    async function processarImagens() {
+      const input = document.getElementById("fileInput");
+      const statusEl = document.getElementById("status");
+      const resultadosEl = document.getElementById("resultados");
+      const btn = document.getElementById("btnProcessar");
+      const clientNameInput = document.getElementById("clientName");
+
+      const arquivos = input.files;
+      if (!arquivos || arquivos.length === 0) {
+        alert("Selecione pelo menos uma imagem.");
+        return;
+      }
+
+      const nomeClienteBase = (clientNameInput.value || "").trim();
+
+      resultadosEl.innerHTML = "";
+      statusEl.textContent = "Iniciando processamento...\nIsso pode levar alguns segundos por imagem.";
+      btn.disabled = true;
+
+      const contadorPorTipo = {};
+
+      for (let i = 0; i < arquivos.length; i++) {
+        const arquivo = arquivos[i];
+        statusEl.textContent += `\nProcessando: ${arquivo.name}...`;
+
+        try {
+          const dataURL = await lerArquivoComoDataURL(arquivo);
+
+          const resultadoOCR = await Tesseract.recognize(dataURL, "por");
+          const texto = resultadoOCR.data.text || "";
+          const tipo = identificarTipoDocumento(texto);
+
+          contadorPorTipo[tipo] = (contadorPorTipo[tipo] || 0) + 1;
+          const numero = String(contadorPorTipo[tipo]).padStart(2, "0");
+
+          // Sugestão de nome: [CLIENTE_]TIPO_XX
+          let baseNome = "";
+          if (nomeClienteBase) {
+            // tira acentos simples pra evitar bagunça em filename
+            baseNome = removerAcentos(nomeClienteBase.replace(/\s+/g, "_")) + "_";
+          }
+          baseNome += tipo + "_" + numero;
+
+          // Cria o PDF com a imagem
+          const pdf = new jsPDF({
+            orientation: "portrait",
+            unit: "pt",
+            format: "a4"
+          });
+
+          const img = new Image();
+          img.src = dataURL;
+          await new Promise((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = e => reject(e);
+          });
+
+          const pageWidth = pdf.internal.pageSize.getWidth();
+          const pageHeight = pdf.internal.pageSize.getHeight();
+          const ratio = Math.min(pageWidth / img.width, pageHeight / img.height);
+          const imgWidth = img.width * ratio;
+          const imgHeight = img.height * ratio;
+          const x = (pageWidth - imgWidth) / 2;
+          const y = (pageHeight - imgHeight) / 2;
+
+          let formatoImg = "JPEG";
+          if (arquivo.type && arquivo.type.includes("png")) {
+            formatoImg = "PNG";
+          }
+
+          pdf.addImage(img, formatoImg, x, y, imgWidth, imgHeight);
+
+          const blob = pdf.output("blob");
+          const url = URL.createObjectURL(blob);
+
+          // Monta o item na lista com pré-visualização + campo pra editar nome
+          const li = document.createElement("li");
+
+          const previewDiv = document.createElement("div");
+          previewDiv.className = "preview-wrapper";
+          const previewImg = document.createElement("img");
+          previewImg.src = dataURL;
+          previewImg.alt = "Pré-visualização";
+          previewImg.className = "preview-image";
+          previewDiv.appendChild(previewImg);
+
+          const infoDiv = document.createElement("div");
+          infoDiv.className = "doc-info";
+
+          const linhaOriginal = document.createElement("div");
+          linhaOriginal.className = "doc-info-row";
+          linhaOriginal.innerHTML = `<span class="label">Arquivo original:</span> ${arquivo.name}`;
+
+          const linhaTipo = document.createElement("div");
+          linhaTipo.className = "doc-info-row";
+          linhaTipo.innerHTML = `<span class="label">Tipo detectado:</span> <span class="tipo">${tipo}</span>`;
+
+          const linhaNome = document.createElement("div");
+          linhaNome.className = "doc-info-row";
+          const labelNome = document.createElement("span");
+          labelNome.className = "label";
+          labelNome.textContent = "Nome do PDF:";
+          const inputNome = document.createElement("input");
+          inputNome.type = "text";
+          inputNome.className = "nome-arquivo-input";
+          inputNome.value = baseNome; // sem .pdf
+          inputNome.title = "Edite se quiser alterar o nome do arquivo";
+
+          linhaNome.appendChild(labelNome);
+          linhaNome.appendChild(document.createElement("br"));
+          linhaNome.appendChild(inputNome);
+
+          const linhaDownload = document.createElement("div");
+          linhaDownload.className = "doc-info-row";
+          const link = document.createElement("a");
+          link.href = url;
+          link.className = "download-link";
+          link.textContent = "Baixar PDF";
+
+          // Define o nome de download sempre baseado no input
+          const atualizarDownloadName = () => {
+            let nomeBase = inputNome.value.trim();
+            if (!nomeBase) {
+              nomeBase = "documento";
+            }
+            // remove espaços exagerados e caracteres muito problemáticos
+            nomeBase = nomeBase.replace(/[\\/:*?"<>|]+/g, "_");
+            link.download = nomeBase + ".pdf";
+          };
+
+          atualizarDownloadName();
+          inputNome.addEventListener("input", atualizarDownloadName);
+
+          linhaDownload.appendChild(link);
+
+          infoDiv.appendChild(linhaOriginal);
+          infoDiv.appendChild(linhaTipo);
+          infoDiv.appendChild(linhaNome);
+          infoDiv.appendChild(linhaDownload);
+
+          li.appendChild(previewDiv);
+          li.appendChild(infoDiv);
+
+          resultadosEl.appendChild(li);
+
+        } catch (erro) {
+          console.error(erro);
+          const li = document.createElement("li");
+          li.innerHTML = `
+            <div><strong>Arquivo:</strong> ${arquivo.name}</div>
+            <div style="color:#c00;"><strong>Erro:</strong> ${erro.message || erro}</div>
+          `;
+          resultadosEl.appendChild(li);
+        }
+      }
+
+      statusEl.textContent += `\n\nConcluído! Revise os nomes e clique em “Baixar PDF” em cada documento.`;
+      btn.disabled = false;
+    }
+
+    // Remove acentos simples para usar em nome de arquivo
+    function removerAcentos(str) {
+      return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    }
+
+    // Registrar service worker (PWA)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('service-worker.js')
+          .catch(err => console.log('Erro ao registrar service worker', err));
+      });
+    }
+  </script>
+</body>
+</html>
